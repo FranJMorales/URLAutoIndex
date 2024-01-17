@@ -1,0 +1,198 @@
+<?php
+/*
+Plugin Name: URL Auto Index
+Description: Indexa  URLs automatica y recurrentemente mediante el plugin de Instant Indexing de Rank Math.
+Version: 1.0.1
+Author: FJ
+Author URI: https://fj.mk
+*/
+
+// Check if required plugins are active
+function ri_check_required_plugins() {
+    include_once(ABSPATH . 'wp-admin/includes/plugin.php');
+    
+    if (!is_plugin_active('fast-indexing-api/instant-indexing.php') || !is_plugin_active('seo-by-rank-math/rank-math.php')) {
+        deactivate_plugins(plugin_basename(__FILE__));
+        wp_die('Por favor, instala y activa Instant Indexing y Rank Math SEO antes de activar este plugin.');
+    }
+}
+
+register_activation_hook(__FILE__, 'ri_check_required_plugins');
+
+// Add configuration page to the WordPress admin menu
+function ri_admin_menu() {
+    add_menu_page('Configuración de Recurrent Indexing', 'Recurrent Indexing', 'manage_options', 'recurrent-indexing-config', 'ri_config_page');
+}
+
+add_action('admin_menu', 'ri_admin_menu');
+
+// Fetch all posts with 'publish' status
+function ri_get_all_published_posts() {
+    $args = array(
+        'post_type' => array('post', 'page'),
+        'post_status' => 'publish',
+        'posts_per_page' => -1,
+    );
+    
+    $query = new WP_Query($args);
+    return $query->posts;
+}
+
+// Display posts and cronjob configuration in the admin menu page
+function ri_config_page() {
+    $posts = ri_get_all_published_posts();
+    $selected_posts = get_option('ri_selected_posts', array());
+    
+    ?>
+    <div class="wrap">
+        <h2>Configuración de URL Auto Index</h2>
+        <form method="post" action="">
+            <table class="form-table">
+                <tr>
+                    <th scope="row"><label for="posts_to_index">Selecciona los posts para indexar:</label></th>
+                    <td>
+                        <select multiple size="10" name="posts_to_index[]" id="posts_to_index">
+                            <?php foreach ($posts as $post) : ?>
+                                <option value="<?php echo $post->ID; ?>" <?php selected(in_array($post->ID, $selected_posts)); ?>>
+                                    <?php echo $post->post_title; ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="cron_frequency">Configurar Cronjob:</label></th>
+                    <td>
+    <select name="cron_frequency" id="cron_frequency">
+        <option value="deactivate" <?php selected(get_option('ri_cron_frequency'), 'deactivate'); ?>>Desactivado</option>
+        <option value="every_minute" <?php selected(get_option('ri_cron_frequency'), 'every_minute'); ?>>Cada minuto</option>
+        <option value="hourly" <?php selected(get_option('ri_cron_frequency'), 'hourly'); ?>>Cada hora</option>
+        <option value="twicedaily" <?php selected(get_option('ri_cron_frequency'), 'twicedaily'); ?>>Dos veces al día</option>
+        <option value="daily" <?php selected(get_option('ri_cron_frequency'), 'daily'); ?>>Diariamente</option>
+    </select>
+</td>
+                </tr>
+            </table>
+            <?php submit_button('Guardar configuración'); ?>
+        </form>
+		
+    </div>
+    <?php
+}
+
+// Handle form submission and set up the cronjob
+function ri_handle_form_submission() {
+    if (isset($_POST['submit'])) {
+        // Save selected post IDs
+        $selected_posts = isset($_POST['posts_to_index']) ? $_POST['posts_to_index'] : array();
+        update_option('ri_selected_posts', $selected_posts);
+        
+        // Set up the cronjob with the specified frequency
+        $frequency = isset($_POST['cron_frequency']) ? $_POST['cron_frequency'] : 'daily';
+        update_option('ri_cron_frequency', $frequency);
+        
+        // Unscheduling the event if it's already scheduled
+        $timestamp = wp_next_scheduled('ri_index_selected_posts');
+        if ($timestamp) {
+            wp_unschedule_event($timestamp, 'ri_index_selected_posts');
+        }
+        
+        // If the frequency is not "deactivate", schedule the new event
+        if ($frequency !== 'deactivate') {
+            wp_schedule_event(time(), $frequency, 'ri_index_selected_posts');
+			echo '<div class="updated"><p>Configuración guardada con éxito.</p></div>';
+        } else {
+			echo '<div class="updated"><p>Cron desactivado con éxito.</p></div>';
+		}
+    }
+}
+
+
+add_action('admin_init', 'ri_handle_form_submission');
+
+// Cronjob callback function to index selected posts
+function ri_index_posts() {
+    $selected_posts = get_option('ri_selected_posts', array());
+    include_once WP_PLUGIN_DIR . '/fast-indexing-api/includes/class-instant-indexing.php';
+    $rm_giapi_instance = new RM_GIAPI();
+    
+    // Retrieve existing logs or initialize an empty array if none exist
+    $logs = get_option('ri_indexing_logs', array());
+    
+    foreach ($selected_posts as $post_id) {
+    try {
+        $rm_giapi_instance->publish_post($post_id);
+        
+        $post = get_post($post_id);
+        $log = array(
+            'status' => 'OK',
+            'time' => date('d/m/Y H:i:s'),
+            'url' => get_permalink($post)
+        );
+    } catch (Exception $e) {
+        // Manejo de la excepción
+        $log = array(
+            'status' => 'ERROR',
+            'time' => date('d/m/Y H:i:s'),
+            'url' => get_permalink($post)
+        );
+    }
+	}
+    
+    $logs[] = $log;
+    
+    update_option('ri_indexing_logs', $logs);
+}
+
+add_action('ri_index_selected_posts', 'ri_index_posts');
+
+function ri_admin_menu_log() {
+    add_submenu_page('recurrent-indexing-config', 'Log de Indexación', 'Log de Indexación', 'manage_options', 'recurrent-indexing-log', 'ri_log_page');
+}
+
+add_action('admin_menu', 'ri_admin_menu_log');
+
+// Display the indexing log in the admin menu page
+function ri_log_page() {
+    $logs = get_option('ri_indexing_logs', array());
+    
+    ?>
+    <div class="wrap">
+        <h2>Log de Indexación</h2>
+        
+        <?php if (empty($logs)) : ?>
+            <p>No hay eventos registrados.</p>
+            <?php return; ?>
+        <?php endif; ?>
+
+        <table class="widefat fixed" cellspacing="0">
+            <thead>
+                <tr>
+                    <th class="manage-column column-title" scope="col">Estado</th>
+                    <th class="manage-column column-title" scope="col">Hora</th>
+                    <th class="manage-column column-title" scope="col">URL del POST</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($logs as $log) : ?>
+                    <tr>
+                        <td><?php echo esc_html($log['status']); ?></td>
+                        <td><?php echo esc_html($log['time']); ?></td>
+                        <td><a href="<?php echo esc_url($log['url']); ?>"><?php echo esc_url($log['url']); ?></a></td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php
+}
+
+function ri_custom_cron_schedules($schedules) {
+    $schedules['every_minute'] = array(
+        'interval' => 60, // Every 60 seconds
+        'display' => 'Cada minuto'
+    );
+    return $schedules;
+}
+
+add_filter('cron_schedules', 'ri_custom_cron_schedules');
