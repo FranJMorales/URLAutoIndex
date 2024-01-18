@@ -1,5 +1,5 @@
-# WordPressPlugins
-Plugins and scripts for WordPress
+# URL Auto Index
+
 Steps:
 1_Download
 2_Update in your WordPress
